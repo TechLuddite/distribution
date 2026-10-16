@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Audit clean CI image contents before publishing submission artifacts."""
+import contextlib
+import os
 import gzip
 import hashlib
 import json
@@ -65,10 +67,23 @@ def scan(root):
             raise RuntimeError("Nonempty credential/state file: " + relative)
         if relative == "etc/machine-id" and path.read_bytes().strip() not in (b"", b"uninitialized"):
             raise RuntimeError("Initialized machine-id in image")
-        if relative in {"etc/shadow", "usr/cache/shadow", "etc/passwd", "usr/cache/passwd"}:
+        if relative in {"etc/shadow", "usr/cache/shadow", "etc/passwd", "usr/cache/passwd", "etc/group"}:
             baseline_path = baseline_filesystem / relative
             assert baseline_path.is_file(), "No public account baseline: " + relative
-            assert path.read_bytes() == baseline_path.read_bytes(), "Changed account database: " + relative
+            actual = path.read_text().splitlines()
+            expected = baseline_path.read_text().splitlines()
+            if relative.endswith("shadow"):
+                # add_user() salts the documented public default afresh per build.
+                for rows in (actual, expected):
+                    root_entry = next(row for row in rows if row.startswith("root:"))
+                    fields = root_entry.split(":")
+                    password_hash = fields[1]
+                    assert password_hash.startswith("$6$") and not any(fields[2:])
+                    default_hash = run("openssl", "passwd", "-6", "-salt", password_hash.split("$")[2], "rocknix").decode().strip()
+                    assert default_hash == password_hash, "Root password is not the public ROCKNIX default"
+                actual = [row for row in actual if not row.startswith("root:")]
+                expected = [row for row in expected if not row.startswith("root:")]
+            assert sorted(actual) == sorted(expected), "Changed account database: " + relative
         tail = b""
         with path.open("rb") as source:
             for block in iter(lambda: source.read(1024 * 1024), b""):
@@ -94,8 +109,8 @@ public_fixture = "--public-fixture" in sys.argv[3:]
 archives = sorted(target.glob("ROCKNIX-*.tar"))
 images = sorted(target.glob("ROCKNIX-*.img.gz"))
 assert (archives or public_fixture) and images, "Image and update archive are both required"
-report = {"origin": "Fresh GitHub runner; public ROCKNIX sources/cache and Portal source patch only", "artifacts": []}
-with tempfile.TemporaryDirectory(prefix="portal-artifact-audit-") as directory:
+report = {"origin": "Fresh GitHub runner; public ROCKNIX sources/cache and Portal source patch only", "account_database_check": "Same public accounts; documented root default verified cryptographically; entry order and generated salt may differ", "artifacts": []}
+with (contextlib.nullcontext(os.environ["PORTAL_AUDIT_WORK"]) if os.environ.get("PORTAL_AUDIT_WORK") else tempfile.TemporaryDirectory(prefix="portal-artifact-audit-")) as directory:
     work = Path(directory)
     baseline_images = list(Path(sys.argv[2]).glob("*.img.gz"))
     assert len(baseline_images) == 1
