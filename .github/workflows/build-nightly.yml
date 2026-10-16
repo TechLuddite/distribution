@@ -30,6 +30,13 @@ jobs:
           run-id: 38842718916
           name: aarch64 build (SM8550)
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v8
+        with:
+          repository: ROCKNIX/distribution
+          run-id: 38842718916
+          name: ROCKNIX-base-image-SM8550-20261016
+          path: public-baseline
+          github-token: ${{ github.token }}
       - name: Restore public upstream build cache
         run: |
           tar -xf build.aarch64.tar
@@ -44,14 +51,16 @@ jobs:
             -e EMULATION_DEVICE=no -e ENABLE_32BIT=no -e MODULES_PKG=no \
             -e AUTOREMOVE=yes -e NIGHTLY=no -e OFFICIAL=no \
             -e DISABLE_COLORS=yes -e CONCURRENCY_MAKE_LEVEL=4 \
+            -e CCACHE_COMPILERCHECK=content -e CCACHE_COMPRESS=1 \
+            -e CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime \
             ghcr.io/rocknix/rocknix-build:latest \
             bash -c './scripts/clean linux && ./scripts/clean alsa-ucm-conf && ./scripts/build_distro' \
-            > build-portal-audio.log 2>&1
+            > build-portal-audio.log 2>&1 || { tail -100 build-portal-audio.log; exit 1; }
       - name: Audit finished artifacts before upload
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y squashfs-tools mtools e2fsprogs fdisk
-          python3 .github/scripts/audit-portal-artifacts.py target > artifact-audit.txt
+          python3 .github/scripts/audit-portal-artifacts.py target public-baseline > artifact-audit.txt
       - uses: actions/upload-artifact@v7
         with:
           name: Portal-audio-reviewed-artifacts
