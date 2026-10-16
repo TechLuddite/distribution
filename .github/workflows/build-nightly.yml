@@ -37,6 +37,14 @@ jobs:
           name: ROCKNIX-base-image-SM8550-20261016
           path: public-baseline
           github-token: ${{ github.token }}
+      - name: Verify auditor against public upstream image
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools mtools e2fsprogs fdisk
+          mkdir public-fixture
+          cp public-baseline/*.img.gz public-fixture/
+          sudo python3 .github/scripts/audit-portal-artifacts.py public-fixture public-baseline --public-fixture > public-fixture-audit.txt
+          sudo rm -rf public-fixture
       - name: Restore public upstream build cache
         run: |
           tar -xf build.aarch64.tar
@@ -56,11 +64,14 @@ jobs:
             ghcr.io/rocknix/rocknix-build:latest \
             bash -c './scripts/clean linux && ./scripts/clean alsa-ucm-conf && ./scripts/build_distro' \
             > build-portal-audio.log 2>&1 || { tail -100 build-portal-audio.log; exit 1; }
+      - name: Save encrypted recovery copy
+        run: |
+          tar -cf - target/ROCKNIX-*.img.gz target/ROCKNIX-*.tar \
+            | openssl cms -encrypt -binary -aes-256-cbc -outform DER \
+                -stream -out portal-build-recovery.cms .github/portal-recovery-cert.pem
       - name: Audit finished artifacts before upload
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y squashfs-tools mtools e2fsprogs fdisk
-          python3 .github/scripts/audit-portal-artifacts.py target public-baseline > artifact-audit.txt
+          sudo python3 .github/scripts/audit-portal-artifacts.py target public-baseline > artifact-audit.txt
       - uses: actions/upload-artifact@v7
         with:
           name: Portal-audio-reviewed-artifacts
@@ -72,3 +83,11 @@ jobs:
             artifact-audit.txt
           compression-level: 0
           if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: Portal-encrypted-recovery
+          path: portal-build-recovery.cms
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 7

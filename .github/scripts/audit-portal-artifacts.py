@@ -65,6 +65,10 @@ def scan(root):
             raise RuntimeError("Nonempty credential/state file: " + relative)
         if relative == "etc/machine-id" and path.read_bytes().strip() not in (b"", b"uninitialized"):
             raise RuntimeError("Initialized machine-id in image")
+        if relative in {"etc/shadow", "usr/cache/shadow", "etc/passwd", "usr/cache/passwd"}:
+            baseline_path = baseline_filesystem / relative
+            assert baseline_path.is_file(), "No public account baseline: " + relative
+            assert path.read_bytes() == baseline_path.read_bytes(), "Changed account database: " + relative
         tail = b""
         with path.open("rb") as source:
             for block in iter(lambda: source.read(1024 * 1024), b""):
@@ -86,9 +90,10 @@ def scan(root):
 
 
 target = Path(sys.argv[1]).resolve()
+public_fixture = "--public-fixture" in sys.argv[3:]
 archives = sorted(target.glob("ROCKNIX-*.tar"))
 images = sorted(target.glob("ROCKNIX-*.img.gz"))
-assert archives and images, "Image and update archive are both required"
+assert (archives or public_fixture) and images, "Image and update archive are both required"
 report = {"origin": "Fresh GitHub runner; public ROCKNIX sources/cache and Portal source patch only", "artifacts": []}
 with tempfile.TemporaryDirectory(prefix="portal-artifact-audit-") as directory:
     work = Path(directory)
@@ -104,6 +109,15 @@ with tempfile.TemporaryDirectory(prefix="portal-artifact-audit-") as directory:
     baseline_filesystem = work / "public-baseline-root"
     run("unsquashfs", "-no-progress", "-no-xattrs", "-d", str(baseline_filesystem), str(baseline_system))
     report["public_baseline"] = {"run": 38842718916, "name": baseline_images[0].name, "sha256": sha(baseline_images[0])}
+    if public_fixture:
+        fixture_folder = target / "public-fixture" / "target"
+        fixture_folder.mkdir(parents=True)
+        shutil.copyfile(baseline_system, fixture_folder / "SYSTEM")
+        run("mcopy", "-i", str(baseline_disk) + "@@" + str(offset), "::/KERNEL", str(fixture_folder / "KERNEL"))
+        fixture_archive = target / "ROCKNIX-public-fixture.tar"
+        with tarfile.open(fixture_archive, "w") as destination:
+            destination.add(fixture_folder.parent, arcname="public-fixture")
+        archives = [fixture_archive]
     baseline_disk.unlink()
     for index, archive in enumerate(archives):
         folder = work / ("tar-" + str(index))
@@ -122,7 +136,8 @@ with tempfile.TemporaryDirectory(prefix="portal-artifact-audit-") as directory:
         run("unsquashfs", "-no-progress", "-no-xattrs", "-d", str(filesystem), str(system))
         files = scan(folder) + scan(filesystem)
         mic = filesystem / "usr/share/alsa/ucm2/AYN/Odin2/PortalMic.conf"
-        assert "SWR_MIC7" in mic.read_text()
+        if not public_fixture:
+            assert "SWR_MIC7" in mic.read_text()
         report["artifacts"].append({"name": archive.name, "sha256": sha(archive), "files_scanned": files})
         for image_index, image in enumerate(images):
             disk = work / ("disk-" + str(image_index) + ".img")
